@@ -18,6 +18,37 @@ use toy_ac::symbol_model::VectorCountSymbolModel;
 
 use ffmpeg_sidecar::event::StreamTypeSpecificData::Video;
 
+const NUM_CONTEXTS: usize = 8;
+ 
+const THRESHOLDS: [u32; NUM_CONTEXTS - 1] = [4, 10, 20, 35, 55, 85, 130];
+ 
+fn activity_context(prior: &[u8], r: u32, c: u32, width: u32, height: u32) -> usize {
+    let idx = |row: u32, col: u32| (row * width + col) as usize;
+ 
+    let left  = if c > 0          { prior[idx(r, c-1)] } else { prior[idx(r, c)] } as i32;
+    let right = if c+1 < width    { prior[idx(r, c+1)] } else { prior[idx(r, c)] } as i32;
+    let above = if r > 0          { prior[idx(r-1, c)] } else { prior[idx(r, c)] } as i32;
+    let below = if r+1 < height   { prior[idx(r+1, c)] } else { prior[idx(r, c)] } as i32;
+ 
+    let activity = ((left - right).abs() + (above - below).abs()) as u32;
+ 
+    let mut bucket = 0usize;
+    for &t in &THRESHOLDS {
+        if activity > t {
+            bucket += 1;
+        } else {
+            break;
+        }
+    }
+    bucket
+}
+
+fn make_contexts() -> Vec<VectorCountSymbolModel<i32>> {
+    (0..NUM_CONTEXTS)
+        .map(|_| VectorCountSymbolModel::new((0..=255).collect()))
+        .collect()
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Make sure ffmpeg is installed
     ffmpeg_sidecar::download::auto_download().unwrap();
@@ -106,7 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut enc = Encoder::new();
 
     // Set up arithmetic coding context(s)
-    let mut pixel_difference_pdf = VectorCountSymbolModel::new((0..=255).collect());
+    let mut contexts = make_contexts();  // 8 independent models
 
     // Process frames
     for frame in iter.filter_frames() {
@@ -131,10 +162,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         + 256)
                         % 256;
 
-                    enc.encode(&pixel_difference, &pixel_difference_pdf, &mut bw);
-
-                    // Update context
-                    pixel_difference_pdf.incr_count(&pixel_difference);
+                    let ctx = activity_context(&prior_frame, r, c, width, height);
+                    enc.encode(&pixel_difference, &contexts[ctx], &mut bw);
+                    contexts[ctx].incr_count(&pixel_difference);
                 }
             }
 
@@ -178,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut dec = Decoder::new();
 
-        let mut pixel_difference_pdf = VectorCountSymbolModel::new((0..=255).collect());
+        let mut contexts = make_contexts();
 
         // Set up initial prior frame as uniform medium gray
         let mut prior_frame = vec![128 as u8; (width * height) as usize];
@@ -196,10 +226,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for r in 0..height {
                     for c in 0..width {
                         let pixel_index = (r * width + c) as usize;
-                        let decoded_pixel_difference = dec.decode(&pixel_difference_pdf, &mut br).to_owned();
-                        pixel_difference_pdf.incr_count(&decoded_pixel_difference);
+                        let ctx = activity_context(&prior_frame, r, c, width, height);
+                        let decoded = dec.decode(&contexts[ctx], &mut br).to_owned();
+                        contexts[ctx].incr_count(&decoded);
 
-                        let pixel_value = (prior_frame[pixel_index] as i32 + decoded_pixel_difference) % 256;
+                        let pixel_value = (prior_frame[pixel_index] as i32 + decoded) % 256;
 
                         if pixel_value != current_frame[pixel_index] as i32 {
                             println!(
