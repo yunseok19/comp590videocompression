@@ -8,4 +8,4 @@ My improvement: instead of one model, I use 8 models based on how much local act
 
 Context is computed as: activity = |left - right| + |above - below|
 
-using the 4 cardinal neighbours in the prior frame, then bucketed into 8 levels. Since the decoder has the same prior frame, no extra information needs to be transmitted — still fully lossless.
+using the 4 cardinal neighbours in the prior frame, then bucketed into 8 levels. Since the decoder has the same prior frame, no extra information needs to be transmitted.
